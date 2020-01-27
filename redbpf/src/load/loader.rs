@@ -12,6 +12,7 @@ use std::ffi::CString;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::os::raw::c_void;
 
 use crate::cpus;
 use crate::ProgramKind::*;
@@ -55,9 +56,15 @@ impl Loader {
     /// present in the module.
     pub async fn load(&self, data: &[u8]) -> Result<Loaded, LoaderError> {
         let mut module = Module::parse(&data).map_err(|e| LoaderError::ParseError(e))?;
+        let program_map = module.maps.iter().filter(|m| m.kind == bpf_sys::bpf_map_type_BPF_MAP_TYPE_PROG_ARRAY).next();
         for prog in module.programs.iter_mut() {
             prog.load(module.version, module.license.clone())
                 .map_err(|e| LoaderError::LoadError(prog.name.clone(), e))?;
+            if let Some(mut n) = prog.number {
+                if let Some(map) = program_map {
+                    map.set(&mut n as *mut _ as *mut c_void, &mut prog.fd.unwrap() as *mut _ as *mut c_void);
+                }
+            }
         }
 
         if let Some(interface) = &self.xdp.interface {

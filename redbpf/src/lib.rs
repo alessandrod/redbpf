@@ -147,17 +147,20 @@ pub struct Module {
 ///     prog.attach_xdp("eth0").unwrap();
 /// }
 /// ```
+#[derive(Debug)]
 pub struct Program {
     pfd: Option<RawFd>,
     fd: Option<RawFd>,
     pub kind: ProgramKind,
     pub name: String,
+    pub number: Option<u32>,
     code: Vec<bpf_insn>,
     code_bytes: i32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProgramKind {
+    Unspec,
     Kprobe,
     Kretprobe,
     XDP,
@@ -177,6 +180,7 @@ pub enum ProgramKind {
 /// This design makes it easier to deal with maps, and keeps them versatile for
 /// sharing data between the kernel and userspace, however, it remains a foot
 /// cannon. In the future, this might need more work.
+#[derive(Debug)]
 pub struct Map {
     pub name: String,
     pub kind: u32,
@@ -195,6 +199,7 @@ impl ProgramKind {
     pub fn to_prog_type(&self) -> bpf_sys::bpf_prog_type {
         use crate::ProgramKind::*;
         match self {
+            Unspec => bpf_sys::bpf_prog_type_BPF_PROG_TYPE_XDP,
             Kprobe | Kretprobe => bpf_sys::bpf_prog_type_BPF_PROG_TYPE_KPROBE,
             XDP => bpf_sys::bpf_prog_type_BPF_PROG_TYPE_XDP,
             SocketFilter => bpf_sys::bpf_prog_type_BPF_PROG_TYPE_SOCKET_FILTER,
@@ -207,15 +212,14 @@ impl ProgramKind {
         match self {
             Kprobe => bpf_sys::bpf_probe_attach_type_BPF_PROBE_ENTRY,
             Kretprobe => bpf_sys::bpf_probe_attach_type_BPF_PROBE_RETURN,
-            a @ Tracepoint => panic!("Program type cannot be used with attach(): {:?}", a),
-            a @ SocketFilter => panic!("Program type cannot be used with attach(): {:?}", a),
-            a @ XDP => panic!("Program type cannot be used with attach(): {:?}", a),
+            k => panic!("Program type cannot be used with attach(): {:?}", k),
         }
     }
 
     pub fn from_section(section: &str) -> Result<ProgramKind> {
         use crate::ProgramKind::*;
         match section {
+            "unspec" => Ok(Unspec),
             "kretprobe" => Ok(Kretprobe),
             "kprobe" => Ok(Kprobe),
             "xdp" => Ok(XDP),
@@ -227,7 +231,7 @@ impl ProgramKind {
 }
 
 impl Program {
-    pub fn new(kind: &str, name: &str, code: &[u8]) -> Result<Program> {
+    pub fn new(kind: &str, name: &str, number: Option<u32>, code: &[u8]) -> Result<Program> {
         let code_bytes = code.len() as i32;
         let code = zero::read_array(code).to_vec();
         let name = name.to_string();
@@ -238,6 +242,7 @@ impl Program {
             fd: None,
             kind,
             name,
+            number,
             code,
             code_bytes,
         })
@@ -367,7 +372,7 @@ impl Module {
         let mut version = 0u32;
 
         for (shndx, shdr) in object.section_headers.iter().enumerate() {
-            let (kind, name) = get_split_section_name(&object, &shdr, shndx)?;
+            let (kind, name, number) = parse_section_name(&object, &shdr, shndx)?;
 
             let section_type = shdr.sh_type;
             let content = data(&bytes, &shdr);
@@ -385,8 +390,9 @@ impl Module {
                 (hdr::SHT_PROGBITS, Some(kind @ "kprobe"), Some(name))
                 | (hdr::SHT_PROGBITS, Some(kind @ "kretprobe"), Some(name))
                 | (hdr::SHT_PROGBITS, Some(kind @ "xdp"), Some(name))
-                | (hdr::SHT_PROGBITS, Some(kind @ "socketfilter"), Some(name)) => {
-                    programs.insert(shndx, Program::new(kind, name, &content)?);
+                | (hdr::SHT_PROGBITS, Some(kind @ "socketfilter"), Some(name))
+                | (hdr::SHT_PROGBITS, Some(kind @ "unspec"), Some(name)) => {
+                    programs.insert(shndx, Program::new(kind, name, number, &content)?);
                 }
                 _ => {}
             }
@@ -411,11 +417,11 @@ impl Module {
 }
 
 #[inline]
-fn get_split_section_name<'o>(
+fn parse_section_name<'o>(
     object: &'o Elf<'_>,
     shdr: &'o SectionHeader,
     shndx: usize,
-) -> Result<(Option<&'o str>, Option<&'o str>)> {
+) -> Result<(Option<&'o str>, Option<&'o str>, Option<u32>)> {
     let name = object
         .shdr_strtab
         .get_unsafe(shdr.sh_name)
@@ -424,12 +430,13 @@ fn get_split_section_name<'o>(
             shndx
         )))?;
 
-    let mut names = name.splitn(2, '/');
+    let mut names = name.splitn(3, '/');
 
     let kind = names.next();
     let name = names.next();
+    let number = names.next().map(|n| n.parse().unwrap());
 
-    Ok((kind, name))
+    Ok((kind, name, number))
 }
 
 impl Rel {

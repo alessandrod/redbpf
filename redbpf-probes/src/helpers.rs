@@ -1,6 +1,7 @@
 use core::mem::{size_of, MaybeUninit};
 
 use crate::bindings::*;
+use crate::maps::ProgramMap;
 use cty::*;
 pub use ufmt;
 use ufmt::uWrite;
@@ -94,6 +95,13 @@ pub fn bpf_trace_printk(message: &[u8]) -> ::cty::c_int {
             message.as_ptr() as *const ::cty::c_char,
             message.len() as u32,
         )
+    }
+}
+
+#[inline]
+pub fn bpf_tail_call(ctx: *mut c_void, programs: &mut ProgramMap, program: u32) {
+    unsafe {
+        gen::bpf_tail_call(ctx, programs as *mut _ as *mut _, program);
     }
 }
 

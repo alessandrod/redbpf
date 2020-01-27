@@ -196,3 +196,24 @@ impl<T> PerfMap<T> {
         };
     }
 }
+
+/// Program map.
+#[repr(transparent)]
+pub struct ProgramMap {
+    pub def: bpf_map_def,
+}
+
+impl ProgramMap {
+    /// Creates a program map with the specified maximum number of elements.
+    pub const fn with_max_entries(max_entries: u32) -> Self {
+        Self {
+            def: bpf_map_def {
+                type_: bpf_map_type_BPF_MAP_TYPE_PROG_ARRAY,
+                key_size: mem::size_of::<u32>() as u32,
+                value_size: mem::size_of::<u32>() as u32,
+                max_entries,
+                map_flags: 0,
+            },
+        }
+    }
+}
